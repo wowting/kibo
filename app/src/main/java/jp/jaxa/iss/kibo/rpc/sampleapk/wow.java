@@ -1,246 +1,185 @@
 package jp.jaxa.iss.kibo.rpc.sampleapk;
 
-import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
-import gov.nasa.arc.astrobee.Result;
+import android.util.Log;
+import android.content.res.AssetManager;
+
 import gov.nasa.arc.astrobee.types.Point;
 import gov.nasa.arc.astrobee.types.Quaternion;
-
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.util.Log;
-
-import org.opencv.android.Utils;
-import org.opencv.core.Core;
-import org.opencv.core.Mat;
-import org.opencv.core.Rect;
-import org.opencv.core.Scalar;
-import org.opencv.core.Size;
+import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
+import org.opencv.core.*;
+import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
 import java.io.InputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class wow extends KiboRpcService {
 
-    private static final String TAG = YourService.class.getSimpleName();
+    private static final Map<Integer, Point> AREA_POINTS = new HashMap<Integer, Point>() {{
+        put(1, new Point(10.95, -10.1, 5.2));
+        put(2, new Point(11.0, -8.9, 3.76));
+        put(3, new Point(11.0, -7.9, 3.76));
+        put(4, new Point(9.87, -6.9, 4.9));
+    }};
 
-    private static final String[] TEMPLATE_FILE_NAMES = {
-            "coin.png", "compass.png", "coral.png", "crystal.png",
-            "diamond.png", "emerald.png", "fossil.png", "key.png",
-            "letter.png", "shell.png", "treasure_box.png"
-    };
-
-    private static final String[] TEMPLATE_NAMES = {
-            "coin", "compass", "coral", "crystal",
-            "diamond", "emerald", "fossil", "key",
-            "letter", "shell", "treasure_box"
-    };
-
-    private static final Point[] AREA_POINTS = {
-            new Point(11.0, -10.0, 5.0),
-            new Point(10.9, -9.0, 4.0),
-            new Point(10.9, -8.0, 4.0),
-            new Point(9.9, -6.9, 5.0)
-    };
-    private static final Quaternion AREA_QUAT = new Quaternion(0f, 0f, -0.707f, 0.707f);
-
-    private static final Point[] OASIS_POINTS = {
-            new Point(10.6, -9.7, 4.6),
-            new Point(11.0, -8.9, 5.1),
-            new Point(10.6, -8.1, 5.1),
-            new Point(11.0, -7.2, 4.7)
-    };
+    private static final Map<Integer, Quaternion> AREA_QUATS = new HashMap<Integer, Quaternion>() {{
+        put(1, new Quaternion(0f, 0f, -0.707f, 0.707f));
+        put(2, fromEuler(0, 90, 0));
+        put(3, fromEuler(0, 90, 0));
+        put(4, new Quaternion(0f, 0f, 0.707f, 0.707f));
+    }};
 
     private static final Point ASTRONAUT_POINT = new Point(11.143, -6.7607, 4.9654);
     private static final Quaternion ASTRONAUT_QUAT = new Quaternion(0f, 0f, 0.707f, 0.707f);
 
-    private int treasureAreaIndex = -1;
+    private final List<String> landmarkItems = Arrays.asList("coin", "compass", "coral", "fossil", "key", "letter", "shell", "treasure_box");
+    private final List<String> treasureItems = Arrays.asList("crystal", "diamond", "emerald");
+    private final Map<String, Integer> foundItemArea = new HashMap<>();
 
     @Override
     protected void runPlan1() {
-        Log.i(TAG, "=== 任務開始 ===");
         api.startMission();
 
-        try {
-            Thread.sleep(2000);
-        } catch (InterruptedException ignored) {}
-
-        String[] areaItems = new String[AREA_POINTS.length];
-
-        for (int i = 0; i < AREA_POINTS.length; i++) {
-            Result result = api.moveTo(AREA_POINTS[i], AREA_QUAT, true);
-            if (!result.hasSucceeded()) {
-                Log.w(TAG, "無法移動至 Area " + (i + 1) + ": " + result.getMessage());
-                continue;
-            }
-
-            Mat image = api.getMatNavCam();
-            if (image != null) {
-                api.saveMatImage(image, "area" + (i + 1) + ".png");
-                String recognized = recognizeObjectWithTemplates(image);
-                areaItems[i] = recognized;
-                boolean isTreasure = recognized.matches("crystal|diamond|emerald");
-                api.setAreaInfo(i + 1, recognized, isTreasure ? 0 : 1);
-                if (isTreasure) treasureAreaIndex = i;
-            }
+        for (int area = 1; area <= 4; area++) {
+            visitAndRecognize(area);
         }
 
-        for (Point oasis : OASIS_POINTS) {
-            Result result = api.moveTo(oasis, AREA_QUAT, true);
-            if (!result.hasSucceeded()) {
-                Log.w(TAG, "無法移動至 Oasis: " + oasis.toString());
-                continue;
-            }
-            Log.i(TAG, "穿越 Oasis Zone: " + oasis.toString());
-            try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
-        }
+        moveToWithRetry(ASTRONAUT_POINT, ASTRONAUT_QUAT);
+        api.reportRoundingCompletion();
 
-        Result crewResult = api.moveTo(ASTRONAUT_POINT, ASTRONAUT_QUAT, true);
-        if (crewResult.hasSucceeded()) {
-            api.reportRoundingCompletion();
-        } else {
-            Log.w(TAG, "無法抵達 Astronaut，未上報 patrol 完成");
-        }
-
-        Mat targetImage = api.getMatNavCam();
-        api.saveMatImage(targetImage, "target.png");
-        String[] targetItems = recognizeTwoObjects(targetImage);
+        Mat astroImg = getImageWithRetry();
+        String target = recognizeBestMatch(astroImg);
         api.notifyRecognitionItem();
 
-        for (int i = 0; i < areaItems.length; i++) {
-            if (areaItems[i].equals(targetItems[1])) {
-                treasureAreaIndex = i;
-                break;
+        int targetArea = foundItemArea.getOrDefault(target, 4);
+        Point tgtPoint = AREA_POINTS.get(targetArea);
+        Quaternion tgtQuat = AREA_QUATS.get(targetArea);
+
+        moveToWithRetry(tgtPoint, tgtQuat);
+        api.takeTargetItemSnapshot();
+    }
+
+    private void visitAndRecognize(int areaId) {
+        Point pt = AREA_POINTS.get(areaId);
+        Quaternion qt = AREA_QUATS.get(areaId);
+        moveToWithRetry(pt, qt);
+        Mat img = getImageWithRetry();
+        for (String item : landmarkItems) {
+            if (matchTemplate(img, item, 0.8)) {
+                api.setAreaInfo(areaId, item, 1);
+                foundItemArea.put(item, areaId);
             }
         }
-
-        if (treasureAreaIndex >= 0) {
-            Result snapResult = api.moveTo(AREA_POINTS[treasureAreaIndex], AREA_QUAT, true);
-            if (snapResult.hasSucceeded()) {
-                api.takeTargetItemSnapshot();
-            } else {
-                Log.w(TAG, "拍照失敗：無法抵達 Treasure 區域");
+        for (String item : treasureItems) {
+            if (matchTemplate(img, item, 0.8)) {
+                foundItemArea.put(item, areaId);
             }
         }
     }
 
-    private String recognizeObjectWithTemplates(Mat image) {
-        if (image == null) return "unknown";
-        Mat grayFull = new Mat();
-        Imgproc.cvtColor(image, grayFull, Imgproc.COLOR_RGBA2GRAY);
-        int roiWidth = 640, roiHeight = 480;
-        int x = Math.max(0, (grayFull.cols() - roiWidth) / 2);
-        int y = Math.max(0, (grayFull.rows() - roiHeight) / 3);
-        Rect roi = new Rect(x, y, roiWidth, roiHeight);
-        Mat gray = new Mat(grayFull, roi);
-        Imgproc.rectangle(grayFull, roi, new Scalar(0, 255, 0), 2);
-        api.saveMatImage(grayFull, "debug_roi_marked.png");
-
-        double bestScore = 0.0;
-        String bestName = "unknown";
-        int attemptLimit = 20;
-        int attemptCount = 0;
-
-        outer:
-        for (int t = 0; t < TEMPLATE_FILE_NAMES.length; t++) {
-            Mat template = loadTemplateGray(TEMPLATE_FILE_NAMES[t]);
-            if (template == null) continue;
-            for (int width = 40; width <= 80; width += 20) {
-                Mat resized = scalingResizeImage(template, width);
-                for (int angle = 0; angle < 360; angle += 60) {
-                    if (++attemptCount > attemptLimit) break outer;
-                    Mat rotated = rotateImage(resized, angle);
-                    Mat result = new Mat();
-                    Imgproc.matchTemplate(gray, rotated, result, Imgproc.TM_CCOEFF_NORMED);
-                    Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
-                    if (mmr.maxVal > bestScore && mmr.maxVal >= 0.6) {
-                        bestScore = mmr.maxVal;
-                        bestName = TEMPLATE_NAMES[t];
-                    }
-                }
-            }
+    private Mat getImageWithRetry() {
+        Mat image = null;
+        for (int i = 0; i < 3; i++) {
+            image = api.getMatNavCam();
+            if (image != null) return cropWithoutARTag(image);
         }
-
-        Log.i(TAG, "辨識結果: " + bestName + "，分數= " + bestScore);
-        return bestName;
+        return new Mat();
     }
 
-    private String[] recognizeTwoObjects(Mat image) {
-        if (image == null) return new String[]{"unknown", "unknown"};
-        Mat gray = new Mat();
-        Imgproc.cvtColor(image, gray, Imgproc.COLOR_RGBA2GRAY);
-        int[] matchCounts = new int[TEMPLATE_FILE_NAMES.length];
-
-        for (int t = 0; t < TEMPLATE_FILE_NAMES.length; t++) {
-            Mat template = loadTemplateGray(TEMPLATE_FILE_NAMES[t]);
-            if (template == null) continue;
-            for (int width = 30; width <= 100; width += 10) {
-                Mat resized = scalingResizeImage(template, width);
-                for (int angle = 0; angle < 360; angle += 45) {
-                    Mat rotated = rotateImage(resized, angle);
-                    Mat result = new Mat();
-                    Imgproc.matchTemplate(gray, rotated, result, Imgproc.TM_CCOEFF_NORMED);
-                    double threshold = 0.7;
-                    for (int y = 0; y < result.rows(); y++) {
-                        for (int x = 0; x < result.cols(); x++) {
-                            double[] val = result.get(y, x);
-                            if (val != null && val.length > 0 && val[0] >= threshold) {
-                                matchCounts[t]++;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        int firstIdx = -1, secondIdx = -1;
-        for (int i = 0; i < matchCounts.length; i++) {
-            if (firstIdx == -1 || matchCounts[i] > matchCounts[firstIdx]) {
-                secondIdx = firstIdx;
-                firstIdx = i;
-            } else if (secondIdx == -1 || matchCounts[i] > matchCounts[secondIdx]) {
-                secondIdx = i;
-            }
-        }
-
-        return new String[]{
-                firstIdx >= 0 ? TEMPLATE_NAMES[firstIdx] : "unknown",
-                secondIdx >= 0 ? TEMPLATE_NAMES[secondIdx] : "unknown"
-        };
+    private boolean matchTemplate(Mat source, String name, double thresh) {
+        Mat templ = loadTemplate(name);
+        if (templ.empty()) return false;
+        Mat sourceGray = new Mat();
+        Imgproc.cvtColor(source, sourceGray, Imgproc.COLOR_BGR2GRAY);
+        Mat result = new Mat();
+        Imgproc.matchTemplate(sourceGray, templ, result, Imgproc.TM_CCOEFF_NORMED);
+        Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
+        return mmr.maxVal > thresh;
     }
 
-    private Mat loadTemplateGray(String fileName) {
+    private String recognizeBestMatch(Mat image) {
+        String bestMatch = "";
+        double bestScore = -1;
+        for (String item : landmarkItems) {
+            Mat templ = loadTemplate(item);
+            if (templ.empty()) continue;
+            Mat sourceGray = new Mat();
+            Imgproc.cvtColor(image, sourceGray, Imgproc.COLOR_BGR2GRAY);
+            Mat result = new Mat();
+            Imgproc.matchTemplate(sourceGray, templ, result, Imgproc.TM_CCOEFF_NORMED);
+            Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
+            if (mmr.maxVal > bestScore) {
+                bestScore = mmr.maxVal;
+                bestMatch = item;
+            }
+        }
+        for (String item : treasureItems) {
+            Mat templ = loadTemplate(item);
+            if (templ.empty()) continue;
+            Mat sourceGray = new Mat();
+            Imgproc.cvtColor(image, sourceGray, Imgproc.COLOR_BGR2GRAY);
+            Mat result = new Mat();
+            Imgproc.matchTemplate(sourceGray, templ, result, Imgproc.TM_CCOEFF_NORMED);
+            Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
+            if (mmr.maxVal > bestScore) {
+                bestScore = mmr.maxVal;
+                bestMatch = item;
+            }
+        }
+        return bestMatch;
+    }
+
+    private Mat loadTemplate(String filename) {
+        Mat img = new Mat();
         try {
-            InputStream is = getAssets().open("template/" + fileName);
-            Bitmap bmp = BitmapFactory.decodeStream(is);
-            Mat mat = new Mat();
-            Utils.bitmapToMat(bmp, mat);
-            Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY);
+            AssetManager assetManager = getApplicationContext().getAssets();
+            InputStream is = assetManager.open("template/" + filename + ".png");
+            byte[] data = new byte[is.available()];
+            is.read(data);
             is.close();
-            return mat;
+
+            Mat buf = new Mat(1, data.length, CvType.CV_8UC1);
+            buf.put(0, 0, data);
+            img = Imgcodecs.imdecode(buf, Imgcodecs.IMREAD_GRAYSCALE);
+            buf.release();
         } catch (IOException e) {
-            Log.e(TAG, "無法讀取模板: " + fileName, e);
-            return null;
+            Log.e("TemplateLoad", "Failed to load " + filename, e);
         }
+        return img;
     }
 
-    private Mat scalingResizeImage(Mat image, int width) {
-        if (image == null || image.cols() == 0) return null;
-        double ratio = (double) width / image.cols();
-        int height = (int) (image.rows() * ratio);
-        Mat resized = new Mat();
-        Imgproc.resize(image, resized, new Size(width, height));
-        return resized;
+    private Mat cropWithoutARTag(Mat original) {
+        int width = original.cols();
+        int height = original.rows();
+        Rect roi = new Rect(0, 0, (int)(width * 0.85), (int)(height * 0.85));
+        return new Mat(original, roi);
     }
 
-    private Mat rotateImage(Mat img, double angle) {
-        if (img == null) return null;
-        org.opencv.core.Point center = new org.opencv.core.Point(img.cols() / 2.0, img.rows() / 2.0);
-        Mat rotMat = Imgproc.getRotationMatrix2D(center, angle, 1.0);
-        Mat dst = new Mat();
-        Imgproc.warpAffine(img, dst, rotMat, img.size());
-        return dst;
+    private static Quaternion fromEuler(double roll, double pitch, double yaw) {
+        double cy = Math.cos(Math.toRadians(yaw) * 0.5);
+        double sy = Math.sin(Math.toRadians(yaw) * 0.5);
+        double cp = Math.cos(Math.toRadians(pitch) * 0.5);
+        double sp = Math.sin(Math.toRadians(pitch) * 0.5);
+        double cr = Math.cos(Math.toRadians(roll) * 0.5);
+        double sr = Math.sin(Math.toRadians(roll) * 0.5);
+        double w = cr * cp * cy + sr * sp * sy;
+        double x = sr * cp * cy - cr * sp * sy;
+        double y = cr * sp * cy + sr * cp * sy;
+        double z = cr * cp * sy - sr * sp * cy;
+        return new Quaternion((float) x, (float) y, (float) z, (float) w);
+    }
+
+    private void moveToWithRetry(Point pt, Quaternion qt) {
+        for (int i = 0; i < 3; i++) {
+            try {
+                api.moveTo(pt, qt, false);
+                break;
+            } catch (Exception e) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {}
+            }
+        }
     }
 }
