@@ -5,6 +5,7 @@ import android.content.res.AssetManager;
 
 import gov.nasa.arc.astrobee.types.Point;
 import gov.nasa.arc.astrobee.types.Quaternion;
+import gov.nasa.arc.astrobee.Result;
 import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
@@ -15,6 +16,8 @@ import java.io.IOException;
 import java.util.*;
 
 public class wow extends KiboRpcService {
+
+    private static final String TAG = "KiboRPC";
 
     private static final Map<Integer, Point> AREA_POINTS = new HashMap<Integer, Point>() {{
         put(1, new Point(10.95, -10.1, 5.2));
@@ -39,23 +42,29 @@ public class wow extends KiboRpcService {
 
     @Override
     protected void runPlan1() {
+        Log.i(TAG, "Mission started");
         api.startMission();
 
         for (int area = 1; area <= 4; area++) {
+            Log.i(TAG, "Scanning area " + area);
             visitAndRecognize(area);
         }
 
+        Log.i(TAG, "Moving to astronaut");
         moveToWithRetry(ASTRONAUT_POINT, ASTRONAUT_QUAT);
         api.reportRoundingCompletion();
 
         Mat astroImg = getImageWithRetry();
+        api.saveMatImage(astroImg, "astronaut_target.png");
         String target = recognizeBestMatch(astroImg);
+        Log.i(TAG, "Target item recognized as: " + target);
         api.notifyRecognitionItem();
 
         int targetArea = foundItemArea.getOrDefault(target, 4);
         Point tgtPoint = AREA_POINTS.get(targetArea);
         Quaternion tgtQuat = AREA_QUATS.get(targetArea);
 
+        Log.i(TAG, "Moving to target item at area " + targetArea);
         moveToWithRetry(tgtPoint, tgtQuat);
         api.takeTargetItemSnapshot();
     }
@@ -63,16 +72,24 @@ public class wow extends KiboRpcService {
     private void visitAndRecognize(int areaId) {
         Point pt = AREA_POINTS.get(areaId);
         Quaternion qt = AREA_QUATS.get(areaId);
+
+        Log.i(TAG, "Moving to area " + areaId);
         moveToWithRetry(pt, qt);
+
+        Log.i(TAG, "Capturing image at area " + areaId);
         Mat img = getImageWithRetry();
+        api.saveMatImage(img, "area_" + areaId + ".png");
+
         for (String item : landmarkItems) {
             if (matchTemplate(img, item, 0.8)) {
+                Log.i(TAG, "Matched landmark " + item + " at area " + areaId);
                 api.setAreaInfo(areaId, item, 1);
                 foundItemArea.put(item, areaId);
             }
         }
         for (String item : treasureItems) {
             if (matchTemplate(img, item, 0.8)) {
+                Log.i(TAG, "Matched treasure " + item + " at area " + areaId);
                 foundItemArea.put(item, areaId);
             }
         }
@@ -83,7 +100,9 @@ public class wow extends KiboRpcService {
         for (int i = 0; i < 3; i++) {
             image = api.getMatNavCam();
             if (image != null) return cropWithoutARTag(image);
+            try { Thread.sleep(200); } catch (InterruptedException e) {}
         }
+        Log.w(TAG, "Failed to get camera image");
         return new Mat();
     }
 
@@ -144,7 +163,7 @@ public class wow extends KiboRpcService {
             img = Imgcodecs.imdecode(buf, Imgcodecs.IMREAD_GRAYSCALE);
             buf.release();
         } catch (IOException e) {
-            Log.e("TemplateLoad", "Failed to load " + filename, e);
+            Log.e(TAG, "Failed to load template: " + filename, e);
         }
         return img;
     }
@@ -172,13 +191,14 @@ public class wow extends KiboRpcService {
 
     private void moveToWithRetry(Point pt, Quaternion qt) {
         for (int i = 0; i < 3; i++) {
-            try {
-                api.moveTo(pt, qt, false);
+            Log.i(TAG, "Attempting move to: " + pt.toString());
+            Result result = api.moveTo(pt, qt, false);
+            if (result.hasSucceeded()) {
+                Log.i(TAG, "Move success");
                 break;
-            } catch (Exception e) {
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException ignored) {}
+            } else {
+                Log.w(TAG, "Move failed, retrying... " + (i + 1));
+                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
             }
         }
     }
