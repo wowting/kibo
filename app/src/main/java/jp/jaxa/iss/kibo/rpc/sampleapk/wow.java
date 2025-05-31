@@ -39,7 +39,7 @@ public class wow extends KiboRpcService {
     };
 
     private static final Point[] AREA_POINTS = {
-            new Point(11, -10.0, 5),
+            new Point(11.0, -10.0, 5.0),
             new Point(10.9, -9.0, 4.0),
             new Point(10.9, -8.0, 4.0),
             new Point(9.9, -6.9, 5.0)
