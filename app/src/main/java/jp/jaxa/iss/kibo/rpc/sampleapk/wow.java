@@ -23,7 +23,7 @@ public class wow extends KiboRpcService {
         put(1, new Point(11.3, -10.007, 5.287));
       //  put(1, new Point(11.3, -10.007, 5.287));
         put(2, new Point(10.727, -8.80, 4.523));//X:11
-        put(3, new Point(10.95, -7.75, 4.523));//3.8   -7.623
+        put(3, new Point(10.95, -7.70, 4.523));//3.8   -7.623
         put(4, new Point(10.50, -6.573, 4.8));//4.95
     }};
 
