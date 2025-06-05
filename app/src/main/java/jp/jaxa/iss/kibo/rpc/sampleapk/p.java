@@ -5,10 +5,15 @@ import gov.nasa.arc.astrobee.Result;
 import gov.nasa.arc.astrobee.types.Point;
 import gov.nasa.arc.astrobee.types.Quaternion;
 
+import android.graphics.Bitmap;
 import android.util.Log;
 import org.opencv.core.Mat;
+import org.opencv.features2d.SIFT;
 
 public class p extends KiboRpcService {
+
+    private Bitmap inputImage;
+    private SIFT sift = SIFT.create();
 
     private static final String TAG = YourService.class.getSimpleName();
 
